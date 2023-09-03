@@ -1,4 +1,5 @@
 use serde_json::Value;
+use std::{fs::{OpenOptions, self}, io::Read};
 
 async fn ratio_of(ticker: &str, cap_coef: f64) -> Option<f64> {
     let other_req = format!(
@@ -58,8 +59,13 @@ async fn ratio_of(ticker: &str, cap_coef: f64) -> Option<f64> {
         / cash_flow as f64)
 }
 
+fn extract_keys<'a>(contents: &'a String) -> impl Iterator<Item = &'a str> {
+    contents.split(", '")
+        .flat_map(|item| item.split("': '").next())
+        .map(|s| s.trim_matches(|c| c == '\'' || c == '{'))
+}
+
 #[tokio::main]
 async fn main() {
-    let ratio = ratio_of("AAPL", 1.4).await; 
-    println!("{:?}", ratio);
+    let contents = fs::read_to_string("./symbols.txt").expect("Cant open/read file"); /* for sake of optimization */
 }
