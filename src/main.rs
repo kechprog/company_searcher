@@ -105,7 +105,7 @@ async fn main() {
 
     loop {
         let mut active_jobs = Vec::with_capacity(100);
-        while active_jobs.len() < 200 {
+        while active_jobs.len() < 80 {
             if let Some(symbol) = symbols.next() {
                 active_jobs.push(tokio::spawn(ratio_of(symbol.to_string(), 1.4, filter)));
             } else {
