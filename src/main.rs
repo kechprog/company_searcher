@@ -71,7 +71,7 @@ fn main() {
 
     loop {
         let mut handles = vec![];
-        while handles.len() < 300 {
+        while handles.len() < 30 {
             if let Some(symbol) = symbols.next() {
                 let symbol = symbol.to_string();
                 let handle = thread::spawn(move || filter(&symbol));

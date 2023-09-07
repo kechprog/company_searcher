@@ -30,10 +30,10 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl Company {
-    pub fn from_name(name: &str) -> Result<Self> {
-        let client = Client::new();
-        Company::from_name_client(name, &client)
-    }
+    // pub fn from_name(name: &str) -> Result<Self> {
+    //     let client = Client::new();
+    //     Company::from_name_client(name, &client)
+    // }
 
     pub fn from_name_client(name: &str, client: &Client) -> Result<Self> {
         let other_req = format!(
