@@ -1,4 +1,3 @@
-use lazy_static::lazy_static;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::thread;
@@ -7,10 +6,6 @@ use reqwest::blocking::Client;
 mod company;
 use company::Company;
 
-lazy_static! {
-    static ref CLIENT: Client = Client::new();
-}
-
 fn extract_keys<'a>(contents: &'a String) -> impl Iterator<Item = &'a str> {
     contents
         .split(", '")
@@ -18,8 +13,8 @@ fn extract_keys<'a>(contents: &'a String) -> impl Iterator<Item = &'a str> {
         .map(|s| s.trim_matches(|c| c == '\'' || c == '{'))
 }
 
-fn filter (name: &str) -> Option<String> {
-    let company = match Company::from_name_client(&name, &CLIENT) {
+fn filter (name: &str, client: Client) -> Option<String> {
+    let company = match Company::from_name_client(&name, &client) {
         Ok(company) => company,
         Err(_) => return None,
     };
@@ -61,6 +56,7 @@ fn main() {
     let all_work = extract_keys(&contents).count();
     let mut work_done = 0_usize;
     let mut symbols = extract_keys(&contents);
+    let client = Client::new();
 
     let mut output_file = OpenOptions::new()
         .append(true)
@@ -74,7 +70,8 @@ fn main() {
         while handles.len() < 30 {
             if let Some(symbol) = symbols.next() {
                 let symbol = symbol.to_string();
-                let handle = thread::spawn(move || filter(&symbol));
+                let client = client.clone();
+                let handle = thread::spawn(move || filter(&symbol, client));
                 handles.push(handle);
             } else {
                 break;
@@ -85,11 +82,12 @@ fn main() {
             break;
         }
         
-        if let Ok(Some(output)) = handles.pop().unwrap().join() {
-            write!(output_file, "{}\n", output).expect("Cant write to output file");
+        for handle in handles {
+            if let Ok(Some(output)) = handle.join() {
+                write!(output_file, "{}\n", output).expect("Cant write to output file");
+            }
+            work_done += 1;
+            println!("progress: {}%", work_done as f64 / all_work as f64 * 100.0);
         }
-
-        work_done += 1;
-        println!("progress: {}%", work_done as f64 / all_work as f64 * 100.0);
     }
 }
