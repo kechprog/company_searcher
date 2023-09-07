@@ -1,10 +1,11 @@
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::thread;
-use reqwest::blocking::Client;
+use std::fs::{self};
+use futures::future::join_all;
+use reqwest::Client;
 
 mod company;
 use company::Company;
+use tokio::io::AsyncWriteExt;
+use tokio::task;
 
 fn extract_keys<'a>(contents: &'a String) -> impl Iterator<Item = &'a str> {
     contents
@@ -13,16 +14,16 @@ fn extract_keys<'a>(contents: &'a String) -> impl Iterator<Item = &'a str> {
         .map(|s| s.trim_matches(|c| c == '\'' || c == '{'))
 }
 
-fn filter (name: &str, client: Client) -> Option<String> {
-    let company = match Company::from_name_client(&name, &client) {
+async fn filter (name: &str, client: Client) -> Option<String> {
+    let company = match Company::from_name_client(&name, &client).await {
         Ok(company) => company,
         Err(_) => return None,
     };
 
     let net_debt = company.total_debt as f64 - company.free_cash as f64 + company.market_cap as f64 *1.45;
 
-    let yr10_repayment = net_debt * ( (0.1) * 1.1f64.powf(120.0)
-                                    / (1.1f64.powf(120.0) - 1.0) );
+    let yr10_repayment = net_debt * ( 0.11 * 1.11f64.powf(120.0)
+                                    / (1.11f64.powf(120.0) - 1.0) );
     
     let repayment_cash_flow = yr10_repayment * 12.0;
 
@@ -51,27 +52,29 @@ fn filter (name: &str, client: Client) -> Option<String> {
     Some(output)
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let contents = fs::read_to_string("./symbols.txt").expect("Cant open/read file");
     let all_work = extract_keys(&contents).count();
     let mut work_done = 0_usize;
     let mut symbols = extract_keys(&contents);
     let client = Client::new();
 
-    let mut output_file = OpenOptions::new()
+    let mut output_file = tokio::fs::OpenOptions::new()
         .append(true)
         .write(true)
         .create(true)
         .open("output.csv")
+        .await
         .expect("Can't open output file");
 
     loop {
         let mut handles = vec![];
-        while handles.len() < 30 {
+        while handles.len() < 300 {
             if let Some(symbol) = symbols.next() {
                 let symbol = symbol.to_string();
                 let client = client.clone();
-                let handle = thread::spawn(move || filter(&symbol, client));
+                let handle = task::spawn(async move { filter(&symbol, client).await });
                 handles.push(handle);
             } else {
                 break;
@@ -81,10 +84,13 @@ fn main() {
         if handles.is_empty() {
             break;
         }
-        
-        for handle in handles {
-            if let Ok(Some(output)) = handle.join() {
-                write!(output_file, "{}\n", output).expect("Cant write to output file");
+
+        let results = join_all(handles.drain(..80)).await;
+        println!("results: {}", results.len());
+
+        for result in results {
+            if let Ok(Some(output)) = result {
+                output_file.write_all(format!("{}\n", output).as_bytes()).await.expect("Cant write to output file");
             }
             work_done += 1;
             println!("progress: {}%", work_done as f64 / all_work as f64 * 100.0);

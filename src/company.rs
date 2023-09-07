@@ -1,5 +1,6 @@
-use reqwest::blocking::Client;
+use reqwest::Client;
 use serde_json::Value;
+use tokio::try_join;
 // use thiserror::Error;
 
 pub struct Company {
@@ -30,12 +31,8 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl Company {
-    // pub fn from_name(name: &str) -> Result<Self> {
-    //     let client = Client::new();
-    //     Company::from_name_client(name, &client)
-    // }
 
-    pub fn from_name_client(name: &str, client: &Client) -> Result<Self> {
+    pub async fn from_name_client(name: &str, client: &Client) -> Result<Self> {
         let other_req = format!(
             "https://query2.finance.yahoo.com/v6/finance/quoteSummary/{}?modules=financialData",
             name
@@ -45,12 +42,13 @@ impl Company {
             name
         );
     
-        let market_cap_resp = client.get(&market_cap_req).send()?;
-        let other_resp      = client.get(&other_req).send()?;
+        let market_cap_resp = client.get(&market_cap_req).send();
+        let other_resp = client.get(&other_req).send();
     
-        let market_cap_json: Value = market_cap_resp.json()?;
-        let other_json: Value      = other_resp.json()?;
+        let (market_cap_resp, other_resp) = try_join!(market_cap_resp, other_resp)?;
     
+        let market_cap_json: Value = market_cap_resp.json().await?;
+        let other_json: Value = other_resp.json().await?;
 
         let market_cap = market_cap_json["quoteSummary"]["result"][0]["summaryDetail"]["marketCap"]["raw"]
             .as_i64().ok_or(Error::MarketCapParseError)?;
