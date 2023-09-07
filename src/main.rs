@@ -1,42 +1,14 @@
-use serde_json::Value;
+use lazy_static::lazy_static;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::thread;
 use reqwest::blocking::Client;
 
-fn ratio_of<F>(client: &Client, ticker: String, cap_coef: f64, filter: F) -> Option<(String, f64)>
-where F: FnOnce(u64,u64,u64,u64) -> bool
-{
-    let other_req = format!(
-        "https://query2.finance.yahoo.com/v6/finance/quoteSummary/{}?modules=financialData",
-        ticker
-    );
-    let market_cap_req = format!(
-        "https://query2.finance.yahoo.com/v6/finance/quoteSummary/{}?modules=summaryDetail",
-        ticker
-    );
+mod company;
+use company::Company;
 
-    let market_cap_resp = client.get(&market_cap_req).send().ok()?;
-    let other_resp = client.get(&other_req).send().ok()?;
-
-    let market_cap_json: Value = market_cap_resp.json().ok()?;
-    let other_json: Value = other_resp.json().ok()?;
-
-    let market_cap = market_cap_json["quoteSummary"]["result"][0]["summaryDetail"]["marketCap"]["raw"]
-        .as_u64()?;
-    let debt = other_json["quoteSummary"]["result"][0]["financialData"]["totalDebt"]["raw"].as_u64()?;
-    let cash = other_json["quoteSummary"]["result"][0]["financialData"]["totalCash"]["raw"].as_u64()?;
-    let cash_flow = other_json["quoteSummary"]["result"][0]["financialData"]["freeCashflow"]["raw"]
-        .as_u64()?;
-
-    if !filter(market_cap, debt, cash, cash_flow) {
-        return None;
-    }
-
-    Some((
-        ticker,
-        (market_cap as f64 * cap_coef + debt as f64 - cash as f64) / cash_flow as f64,
-    ))
+lazy_static! {
+    static ref CLIENT: Client = Client::new();
 }
 
 fn extract_keys<'a>(contents: &'a String) -> impl Iterator<Item = &'a str> {
@@ -46,8 +18,45 @@ fn extract_keys<'a>(contents: &'a String) -> impl Iterator<Item = &'a str> {
         .map(|s| s.trim_matches(|c| c == '\'' || c == '{'))
 }
 
+fn filter (name: &str) -> Option<String> {
+    let company = match Company::from_name_client(&name, &CLIENT) {
+        Ok(company) => company,
+        Err(_) => return None,
+    };
+
+    let net_debt = company.total_debt as f64 - company.free_cash as f64 + company.market_cap as f64 *1.45;
+
+    let yr10_repayment = net_debt * ( (0.1) * 1.1f64.powf(120.0)
+                                    / (1.1f64.powf(120.0) - 1.0) );
+    
+    let repayment_cash_flow = yr10_repayment * 12.0;
+
+    let levered_cash_flow = company.free_cash_flow as f64 - repayment_cash_flow;
+
+    let stress_level = 1.0 - (company.free_cash_flow as f64 - levered_cash_flow) / company.free_cash_flow as f64;
+
+    if company.market_cap     < 100_000_000
+    || company.market_cap     > 1_000_000_000
+    || net_debt               > 1_000_000_000_f64
+    || company.free_cash_flow < 0
+    {
+        return None;
+    }
+
+    let output = format!("{name},{market_cap},{total_debt},{free_cash},{free_cash_flow},{net_debt},{ratio},{yr10_repayment},{repayment_cash_flow},{levered_cash_flow},{stress_level}",
+        name           = name,
+        market_cap     = company.market_cap,
+        total_debt     = company.total_debt,
+        free_cash      = company.free_cash,
+        free_cash_flow = company.free_cash_flow,
+        net_debt       = net_debt,
+        ratio          = net_debt as f64 / company.free_cash_flow as f64,
+    );
+
+    Some(output)
+}
+
 fn main() {
-    let client = Client::new();
     let contents = fs::read_to_string("./symbols.txt").expect("Cant open/read file");
     let all_work = extract_keys(&contents).count();
     let mut work_done = 0_usize;
@@ -57,18 +66,15 @@ fn main() {
         .append(true)
         .write(true)
         .create(true)
-        .open("output.txt")
+        .open("output.csv")
         .expect("Can't open output file");
-
-    let filter = |_market_cap, _debt, _cash, cash_flow| (cash_flow > 0);
 
     loop {
         let mut handles = vec![];
-        while handles.len() < 8 {
+        while handles.len() < 300 {
             if let Some(symbol) = symbols.next() {
-                let symbol_clone = symbol.to_string();
-                let client = client.clone();
-                let handle = thread::spawn(move || ratio_of(&client, symbol_clone, 1.4, &filter));
+                let symbol = symbol.to_string();
+                let handle = thread::spawn(move || filter(&symbol));
                 handles.push(handle);
             } else {
                 break;
@@ -78,13 +84,12 @@ fn main() {
         if handles.is_empty() {
             break;
         }
-
-        for handle in handles {
-            if let Ok(Some((symbol, ratio))) = handle.join() {
-                write!(output_file, "{}: {}\n", symbol, ratio).expect("Cant write to output file");
-            }
-            work_done += 1;
-            println!("progress: {}%", work_done as f64 / all_work as f64 * 100.0);
+        
+        if let Ok(Some(output)) = handles.pop().unwrap().join() {
+            write!(output_file, "{}\n", output).expect("Cant write to output file");
         }
+
+        work_done += 1;
+        println!("progress: {}%", work_done as f64 / all_work as f64 * 100.0);
     }
 }
